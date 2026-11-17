@@ -1,5 +1,9 @@
 // Token Radar, model radar-3: one sealed snapshot in, one ranked board out.
 //
+// The dashboard is revision 4 of the page: it adds the top-10 deep dives, the sensitivity
+// ranges and the nearest traded comparables below. The model is unchanged from radar-3; the
+// page changed, not the arithmetic, so the board's values and ranks are the same as radar-3's.
+//
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and adds
 // every other clean pre-token protocol in the snapshot: no token on record, not a wrapped /
 // staked / bridged product of a token that already trades, not a versioned pool, not an
@@ -156,6 +160,22 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
+/** One traded comparable: a token that already trades, priced by the market, not the model. */
+export interface Comparable {
+  name: string;
+  tvl_usd: number;
+  mcap_usd: number;
+  ratio: number;
+}
+
+/** A top board row's nearest traded comparables: same category, closest TVL first. */
+export interface TopComp {
+  slug: string;
+  comps: Comparable[];
+  cat_traded_n: number;
+  cat_median_ratio: number | null;
+}
+
 /** The fitted curve: least squares of log10(FDV) on log10(TVL) over the traded protocols. */
 export interface FitCurve {
   intercept: number;
@@ -192,6 +212,10 @@ export interface RadarData {
   validation: Validation;
   /** The fitted points, [log10(TVL), log10(FDV)], for the curve chart. */
   fit_points: [number, number][];
+  /** The top 10 board rows' nearest traded comparables, same category first. */
+  comps: TopComp[];
+  /** The median market cap per dollar of TVL across all 119 traded protocols. */
+  overall_median_ratio: number;
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -638,6 +662,23 @@ export function radarRow(row: BoardRow): RadarRow {
   };
 }
 
+/** The top board row's nearest traded comparables: the same category's traded tokens, closest
+ *  in TVL first, at most three. The count and the category median travel with them, so the page
+ *  can say plainly when a category has almost no traded name to compare against. */
+export function nearestComps(row: BoardRow, pool: SnapshotProtocol[]): TopComp {
+  const same = pool.filter((p) => p.category === row.category);
+  const ratios = same.map((p) => p.mcap_usd! / p.tvl_usd).sort((a, b) => a - b);
+  const near = [...same]
+    .sort(
+      (a, b) =>
+        Math.abs(Math.log10(a.tvl_usd) - Math.log10(row.tvl_usd)) -
+        Math.abs(Math.log10(b.tvl_usd) - Math.log10(row.tvl_usd)),
+    )
+    .slice(0, 3)
+    .map((p) => ({ name: p.name, tvl_usd: p.tvl_usd, mcap_usd: p.mcap_usd!, ratio: p.mcap_usd! / p.tvl_usd }));
+  return { slug: row.slug, comps: near, cat_traded_n: same.length, cat_median_ratio: ratios.length > 0 ? median(ratios) : null };
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot, model);
@@ -646,6 +687,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
   const fit = fitCurve(pool);
   const validation = validateFit(snapshot.protocols, snapshot.as_of, model);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
+  const overallRatios = pool.map((p) => p.mcap_usd! / p.tvl_usd);
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -659,6 +701,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     fit,
     validation,
     fit_points: pool.map((p) => [Math.log10(p.tvl_usd), Math.log10(p.mcap_usd!)] as [number, number]),
+    comps: board.slice(0, 10).map((r) => nearestComps(r, pool)),
+    overall_median_ratio: median(overallRatios),
     rows: board.map(radarRow),
     live,
   };
