@@ -1,8 +1,10 @@
-// Token Radar, model radar-3: one sealed snapshot in, one ranked board out.
+// Token Radar, model radar-5: one sealed snapshot in, one ranked board out.
 //
-// The dashboard is revision 4 of the page: it adds the top-10 deep dives, the sensitivity
-// ranges and the nearest traded comparables below. The model is unchanged from radar-3; the
-// page changed, not the arithmetic, so the board's values and ranks are the same as radar-3's.
+// The dashboard is revision 5 of the page: it adds the top-10 deep dives, the sensitivity
+// ranges and the nearest traded comparables below. The model changed from radar-3/radar-4 in
+// one way only: the growth, maturity and breadth adjustments are gone, so the implied value
+// is the bare fitted curve. The page changed with it: the model section says what the
+// adjustments cost and why they were removed.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and adds
 // every other clean pre-token protocol in the snapshot: no token on record, not a wrapped /
@@ -22,21 +24,21 @@
 // the band is the fit's own 80% prediction band, and the farm plan nets every protocol at the
 // band's low end.
 //
-//   base       = 10 ^ (intercept + slope x log10(TVL))
-//   growth     = clamp(change_7d, -60, 120) per cent
-//   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
-//   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
-//   breadth    = 1 + 0.03 x min(chains - 1, 5)            (more chains, wider distribution)
-//   implied    = max(1, round(base x growthMult x maturity x breadth))
+//   implied    = max(1, round(10 ^ (intercept + slope x log10(TVL))))
 //   band_low   = implied x 10 ^ (-1.28 x resid_sd)       (low end of the 80% band)
 //
-// The adjustments are small and bounded, and the dashboard says what they cost: on held-out
-// traded tokens the curve alone scores 0.902 log10 RMSE and the curve with the adjustments
-// 0.915, against 1.038 for the old median-multiple model. Two richer models were fitted and
-// rejected on the same held-out test: per-category intercepts (0.952) and a ridge regression
-// on TVL, chains, age and 7-day change (0.950) both predicted worse than the single curve, so
-// the model stays one curve. No protocol name is ever special-cased: the same function scores
-// every row.
+// The adjustments are gone because held-out testing says they cost accuracy. Radar-3/radar-4
+// multiplied the curve by a 7-day growth factor, an age maturity factor and a chain-breadth
+// factor; ablating them one at a time on the same held-out test showed the maturity factor
+// was the main cost (walk-forward 1.051 with it alone, 0.997 without any of them) and the
+// growth factor a smaller one, while breadth was neutral. Bare curve vs curve with all three
+// adjustments: 5-fold CV 0.902 vs 0.915, walk-forward 0.997 vs 1.061. Four further models
+// were fitted and rejected on the same test: hierarchical shrinkage of per-category effects
+// (k=5: CV 0.909, walk-forward 0.990), median (quantile) regression (0.899, 0.993), Huber
+// regression (0.901, 0.977) and a log-average ensemble of the curve with the category median
+// (0.902, 0.969) — none beats the bare curve on both metrics by a clear margin, so radar-5
+// stays one curve, unadjusted. No protocol name is ever special-cased: the same function
+// scores every row.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -76,6 +78,25 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
+  // Radar-5: every adjustment weight is zero, so the multipliers are all 1.0 and the implied
+  // value is the bare fitted curve. Held-out testing removed them (see the file header);
+  // the fields stay so the dashboard and the old-model baseline keep their shape.
+  growth_weight: 0,
+  growth_floor: -60,
+  growth_cap: 120,
+  maturity_floor: 1,
+  maturity_range: 0,
+  maturity_days: 1095,
+  unknown_age_days: 365,
+  breadth_per_chain: 0,
+  breadth_max_chains: 5,
+  band_z: 1.28,
+};
+
+/** The radar-3/radar-4 adjustment weights, kept for one purpose only: the old
+ *  median-multiple baseline in the held-out test is scored exactly as radar-2 shipped it,
+ *  with its adjustments on, so the comparison against it stays honest. */
+export const LEGACY_MODEL: ModelConstants = {
   growth_weight: 0.5,
   growth_floor: -60,
   growth_cap: 120,
@@ -89,7 +110,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-5';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -185,14 +206,18 @@ export interface FitCurve {
   resid_sd: number;
 }
 
-/** The held-out test that chose the curve over the old median-multiple model. */
+/** The held-out test that chose the curve over the old median-multiple model. The `adj`
+ *  columns score the fitted curve with the removed radar-3 adjustments switched back on,
+ *  so the dashboard can show what removing them bought. */
 export interface Validation {
   cv_folds: number;
   cv_curve_rmse: number;
   cv_curve_only_rmse: number;
+  cv_curve_adj_rmse: number;
   cv_median_rmse: number;
   cv_n: number;
   walkforward_curve_rmse: number;
+  walkforward_adj_rmse: number;
   walkforward_median_rmse: number;
   walkforward_n_test: number;
 }
@@ -360,6 +385,7 @@ export function validateFit(protocols: SnapshotProtocol[], asOf: string, model: 
   const folds = 5;
   let curveSe = 0;
   let curveOnlySe = 0;
+  let adjSe = 0;
   let medianSe = 0;
   let n = 0;
   for (let k = 0; k < folds; k++) {
@@ -370,9 +396,11 @@ export function validateFit(protocols: SnapshotProtocol[], asOf: string, model: 
       const actual = Math.log10(p.mcap_usd!);
       const eCurve = Math.log10(Math.max(1, curveValue(fit, p.tvl_usd) * adjustments(p, asOf, model).combined)) - actual;
       const eCurveOnly = Math.log10(Math.max(1, curveValue(fit, p.tvl_usd))) - actual;
-      const eMedian = Math.log10(medianPredict(train, p, asOf, model)) - actual;
+      const eAdj = Math.log10(Math.max(1, curveValue(fit, p.tvl_usd) * adjustments(p, asOf, LEGACY_MODEL).combined)) - actual;
+      const eMedian = Math.log10(medianPredict(train, p, asOf, LEGACY_MODEL)) - actual;
       curveSe += eCurve * eCurve;
       curveOnlySe += eCurveOnly * eCurveOnly;
+      adjSe += eAdj * eAdj;
       medianSe += eMedian * eMedian;
       n++;
     }
@@ -383,21 +411,26 @@ export function validateFit(protocols: SnapshotProtocol[], asOf: string, model: 
   const testW = dated.slice(cut);
   const fitW = fitCurve(trainW);
   let curveWSe = 0;
+  let adjWSe = 0;
   let medianWSe = 0;
   for (const p of testW) {
     const actual = Math.log10(p.mcap_usd!);
     const eCurve = Math.log10(Math.max(1, curveValue(fitW, p.tvl_usd) * adjustments(p, asOf, model).combined)) - actual;
-    const eMedian = Math.log10(medianPredict(trainW, p, asOf, model)) - actual;
+    const eAdj = Math.log10(Math.max(1, curveValue(fitW, p.tvl_usd) * adjustments(p, asOf, LEGACY_MODEL).combined)) - actual;
+    const eMedian = Math.log10(medianPredict(trainW, p, asOf, LEGACY_MODEL)) - actual;
     curveWSe += eCurve * eCurve;
+    adjWSe += eAdj * eAdj;
     medianWSe += eMedian * eMedian;
   }
   return {
     cv_folds: folds,
     cv_curve_rmse: Math.sqrt(curveSe / n),
     cv_curve_only_rmse: Math.sqrt(curveOnlySe / n),
+    cv_curve_adj_rmse: Math.sqrt(adjSe / n),
     cv_median_rmse: Math.sqrt(medianSe / n),
     cv_n: n,
     walkforward_curve_rmse: Math.sqrt(curveWSe / testW.length),
+    walkforward_adj_rmse: Math.sqrt(adjWSe / testW.length),
     walkforward_median_rmse: Math.sqrt(medianWSe / testW.length),
     walkforward_n_test: testW.length,
   };

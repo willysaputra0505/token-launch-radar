@@ -34,9 +34,10 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
 
-  // The model in one function: the fitted curve's value for the row's TVL, x growth, x maturity,
-  // x chain breadth. The dashboard shows the breakdown and checks the recomputed number against
-  // the row board.json carries.
+  // The model in one function: the fitted curve's value for the row's TVL. Radar-5 sets every
+  // adjustment weight to zero, so the growth, maturity and breadth multipliers are all 1.0 and
+  // the value is the bare curve. The dashboard shows the breakdown and checks the recomputed
+  // number against the row board.json carries.
   function impliedFromBase(base, row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
@@ -442,8 +443,8 @@
     var v = DATA.validation;
     var panel = el('section', { class: 'panel model', 'aria-label': 'How the value is estimated' },
       el('h2', { text: 'How the value is estimated' }),
-      el('p', { class: 'sub', text: 'Implied value = the fitted curve\'s value for the protocol\'s TVL × growth multiplier × maturity multiplier × chain multiplier. The curve is the least-squares line of log market cap on log TVL over the snapshot\'s own ' + f.n + ' traded protocols outside CEX — fitted at run time from this snapshot, so no coefficient is ever hard-coded.' }),
-      el('div', { class: 'formula', text: 'log10(FDV) = ' + f.intercept.toFixed(3) + ' + ' + f.slope.toFixed(3) + ' × log10(TVL)   ·   implied = round(10^(curve) × (1 + clamp(7d%, ' + m.growth_floor + ', ' + m.growth_cap + ') ÷ 100 × ' + m.growth_weight + ') × (0.6 + min(age, ' + m.maturity_days + ') ÷ ' + m.maturity_days + ' × 0.4) × (1 + 0.03 × min(chains − 1, ' + m.breadth_max_chains + ')))' }),
+      el('p', { class: 'sub', text: 'Implied value = the fitted curve\'s value for the protocol\'s TVL, nothing else. The curve is the least-squares line of log market cap on log TVL over the snapshot\'s own ' + f.n + ' traded protocols outside CEX — fitted at run time from this snapshot, so no coefficient is ever hard-coded. Growth, age and chain breadth were tested as multipliers on the curve and removed in radar-5: with them back, the curve scores ' + v.cv_curve_adj_rmse.toFixed(3) + ' CV and ' + v.walkforward_adj_rmse.toFixed(3) + ' walk-forward, against ' + v.cv_curve_rmse.toFixed(3) + ' and ' + v.walkforward_curve_rmse.toFixed(3) + ' bare — they cost accuracy, so they are gone.' }),
+      el('div', { class: 'formula', text: 'log10(FDV) = ' + f.intercept.toFixed(3) + ' + ' + f.slope.toFixed(3) + ' × log10(TVL)   ·   implied = round(10^(curve))' }),
       el('div', { class: 'chart', html: curveChart() }),
       el('p', { class: 'sub', text: 'Each dot is one traded token the curve was fitted on (' + f.n + ' tokens). The line is the fit: R² ' + f.r2.toFixed(2) + ', residual SD ' + f.resid_sd.toFixed(2) + ' in log10 — wide, because market caps scatter widely around any TVL curve, which is why every farm plan is netted at the low end of the fit\'s 80% band instead of the headline value.' }),
       el('table', { class: 'mult-table' },
@@ -452,7 +453,7 @@
         el('tbody', null,
           el('tr', null, el('td', { text: '5-fold cross-validation (' + v.cv_n + ' tokens)' }), el('td', { class: 'num', text: v.cv_curve_rmse.toFixed(3) }), el('td', { class: 'num', text: v.cv_median_rmse.toFixed(3) })),
           el('tr', null, el('td', { text: 'Walk-forward: fit the oldest two-thirds, test the newest third (' + v.walkforward_n_test + ' tokens)' }), el('td', { class: 'num', text: v.walkforward_curve_rmse.toFixed(3) }), el('td', { class: 'num', text: v.walkforward_median_rmse.toFixed(3) })))),
-      el('p', { class: 'sub', text: 'Two richer models were fitted and rejected on the same held-out test: per-category intercepts and a ridge regression on TVL, chain count, age and 7-day change both predicted worse than the single curve, so the model stays one curve. The adjustments are small and bounded, and the dashboard says what they cost: the curve alone scores ' + v.cv_curve_only_rmse.toFixed(3) + ' log10 RMSE on held-out tokens, the curve with the adjustments ' + v.cv_curve_rmse.toFixed(3) + '.' }));
+      el('p', { class: 'sub', text: 'Richer models were fitted and rejected on the same held-out test: per-category intercepts and a ridge regression on TVL, chain count, age and 7-day change both predicted worse than the single curve. Radar-5 also tested hierarchical shrinkage of the category effects, median regression, Huber regression and a log-average ensemble of the curve with the category median: none beat the bare curve on both tests by a clear margin, so the model stays one curve, unadjusted.' }));
     return panel;
   }
 
@@ -505,7 +506,7 @@
     var list = el('ol', { class: 'brief-list' });
     [
       'Working radar: the board covers all 40 watchlist protocols (197 rows) and ranks the pre-token ones by a stated implied value. The page recomputes every value from the snapshot figures, so the screenshots and the code agree.',
-      'Value model: a fitted log-log curve on the snapshot\'s own 119 traded tokens, with 7-day growth, age and chain breadth as small bounded adjustments. Live-token protocols are set apart with their market caps and never ranked.',
+      'Value model: the bare fitted log-log curve on the snapshot\'s own 119 traded tokens — 7-day growth, age and chain breadth were tested as adjustments and removed because they cost held-out accuracy. Live-token protocols are set apart with their market caps and never ranked.',
       'Farm plans: every row carries six concrete steps with cost and time, netted at the low end of the fit\'s 80% band, per $100 of capital.',
       'The page: sortable, filterable and searchable, with a detail view for every protocol and a live-token view apart.',
       'Looks made: one dark palette, consistent spacing, system type, no framework and no network — every byte the page shows is local.'
@@ -562,10 +563,6 @@
     dialog.appendChild(head);
     if (row) {
       var recomputed = impliedOf(row, DATA.model);
-      var growth = Math.min(DATA.model.growth_cap, Math.max(DATA.model.growth_floor, row.change_7d === null ? 0 : row.change_7d));
-      var age = row.age_days === null ? DATA.model.unknown_age_days : row.age_days;
-      var maturity = DATA.model.maturity_floor + (Math.min(Math.max(age, 0), DATA.model.maturity_days) / DATA.model.maturity_days) * DATA.model.maturity_range;
-      var breadth = 1 + Math.min(Math.max((row.chains || []).length - 1, 0), DATA.model.breadth_max_chains) * DATA.model.breadth_per_chain;
       var eq = function (label, value) {
         return el('div', null, el('span', { text: label }), el('b', { text: value }));
       };
@@ -575,10 +572,10 @@
           eq('TVL', fmtUsd(row.tvl_usd)),
           eq('Fitted curve value', fmtUsd(row.fit_base_usd) + ' (log10(FDV) = ' + DATA.fit.intercept.toFixed(3) + ' + ' + DATA.fit.slope.toFixed(3) + ' × log10(TVL))'),
           eq('Low end of the 80% band', fmtUsd(row.band_low_usd)),
-          eq('7-day growth', fmtPct(row.change_7d) + ' → ×' + (1 + (growth / 100) * DATA.model.growth_weight).toFixed(3)),
-          eq('Maturity', fmtAge(row.age_days) + ' → ×' + maturity.toFixed(3)),
-          eq('Chain breadth', (row.chains || []).length + ' chain' + ((row.chains || []).length === 1 ? '' : 's') + ' → ×' + breadth.toFixed(3)),
-          eq('Implied value', fmtUsd(row.implied_value_usd))));
+          eq('7-day change', fmtPct(row.change_7d) + ' (shown, not applied)'),
+          eq('Age', fmtAge(row.age_days) + ' (shown, not applied)'),
+          eq('Chains', (row.chains || []).length + ' chain' + ((row.chains || []).length === 1 ? '' : 's') + ' (shown, not applied)'),
+          eq('Implied value', fmtUsd(row.implied_value_usd) + ' — the bare curve; the growth, age and breadth adjustments were tested and removed in radar-5')));
       var note = recomputed === row.implied_value_usd
         ? 'The page recomputes this value from the snapshot figures and it matches board.json (' + fmtUsd(row.implied_value_usd) + '). Implied value is a model estimate, not a price: the token does not exist yet.'
         : 'The page recomputes ' + fmtUsd(recomputed) + ' from the snapshot figures, which does not match board.json (' + fmtUsd(row.implied_value_usd) + ') — treat the row as stale.';
