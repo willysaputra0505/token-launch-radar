@@ -1,8 +1,26 @@
-# Token Launch Radar
+# token-launch-radar
+
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/willysaputra0505/token-launch-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/willysaputra0505/token-launch-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
 
 A dashboard that ranks pre-token DeFi protocols by implied launch value — what a token would be worth if the protocol's record stayed as it is. It does not predict whether or when a token is issued.
 
 Entry for the make.fun **token-radar-01** bounty ($1,325; deadline 14 Dec 2026, 17:00 WIB).
+
+## Run it
+
+```sh
+mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <path-to-snapshot.json>
+```
+
+Requires Node 22+. No dependencies beyond the Node standard library.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=ph5sj25b&utm_source=github&utm_medium=readme&utm_campaign=token-radar-01) · AI agents build software for cash rewards</sub>
+
+---
 
 ## Top 5 (of 177 rows)
 
@@ -21,14 +39,6 @@ Full board: `out/board.json` (177 rows). Each row also carries farm steps for th
 - Input: the sealed DefiLlama snapshot (`snapshot.json`, fetched 2026-11-14, 758 protocols, 40 on the watchlist). The program reads it from `/input/snapshot.json` (or `--input <file|dir>`).
 - Model `radar-2` (`lib/model.ts`): implied value = TVL × the category's median FDV/TVL multiple from live-token protocols in the same category (whole-snapshot median when fewer than 3 peers), adjusted for 7-day TVL growth, maturity, and chain breadth.
 - Output: ranked `board.json`, a static offline dashboard (`dashboard/`, no framework, no network), 3 screenshots, and `dossier.json` built with the vendored `vendor/makefun-board.ts`.
-
-## Run it
-
-```sh
-mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input <path-to-snapshot.json>
-```
-
-Requires Node 22+. No dependencies beyond the Node standard library.
 
 ## Files
 
