@@ -22,22 +22,23 @@ Requires Node 22+. No dependencies beyond the Node standard library.
 
 ---
 
-## Top 5 (of 177 rows)
+## Top 5 (of 197 rows)
 
 | Rank | Protocol | TVL | Implied value |
 | --- | --- | --- | --- |
-| 1 | Steakhouse Financial | $2,753,981,495 | $534,663,362 |
-| 2 | Gauntlet | $1,577,685,462 | $318,432,529 |
-| 3 | Veda | $1,563,415,482 | $306,149,537 |
-| 4 | USDD | $1,055,793,606 | $153,239,260 |
-| 5 | Upshift | $499,083,733 | $109,836,010 |
+| 1 | Steakhouse Financial | $2,753,981,495 | $62,636,355 |
+| 2 | Sentora Curator | $2,757,585,593 | $56,992,793 |
+| 3 | Gauntlet | $1,577,685,462 | $50,059,872 |
+| 4 | Veda | $1,563,415,482 | $48,360,314 |
+| 5 | USDD | $1,055,793,606 | $37,742,444 |
 
-Full board: `out/board.json` (177 rows). Each row also carries farm steps for that protocol.
+Full board: `out/board.json` (197 rows). Each row also carries farm steps for that protocol.
 
 ## How it works
 
 - Input: the sealed DefiLlama snapshot (`snapshot.json`, fetched 2026-11-14, 758 protocols, 40 on the watchlist). The program reads it from `/input/snapshot.json` (or `--input <file|dir>`).
-- Model `radar-2` (`lib/model.ts`): implied value = TVL × the category's median FDV/TVL multiple from live-token protocols in the same category (whole-snapshot median when fewer than 3 peers), adjusted for 7-day TVL growth, maturity, and chain breadth.
+- Model `radar-3` (`lib/model.ts`): implied value = the fitted log-log curve's value for the protocol's TVL — `log10(FDV) = 3.382 + 0.472 × log10(TVL)`, least squares over the snapshot's 119 traded protocols outside CEX (R² 0.14, residual SD 0.90 in log10) — adjusted for 7-day TVL growth, maturity, and chain breadth. The curve is fitted at run time from the snapshot, never hard-coded.
+- Held-out test (shown on the dashboard): 5-fold cross-validation log10 RMSE 0.915 for the curve vs 1.038 for the old median-multiple model; walk-forward (fit the oldest two-thirds, test the newest third) 1.061 vs 1.194. Per-category intercepts and a ridge regression on TVL, chains, age and 7-day change were fitted and rejected — both predicted worse out of sample than the single curve. Every farm plan is netted at the low end of the fit's 80% prediction band.
 - Output: ranked `board.json`, a static offline dashboard (`dashboard/`, no framework, no network), 3 screenshots, and `dossier.json` built with the vendored `vendor/makefun-board.ts`.
 
 ## Files

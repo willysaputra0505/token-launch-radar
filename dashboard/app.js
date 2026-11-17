@@ -34,16 +34,22 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
 
-  // The model in one function: TVL x the category multiple the snapshot's live-token protocols
-  // produced, x growth, x maturity, x chain breadth. The dashboard shows the breakdown and checks
-  // the recomputed number against the row board.json carries.
+  // The model in one function: the fitted curve's value for the row's TVL, x growth, x maturity,
+  // x chain breadth. The dashboard shows the breakdown and checks the recomputed number against
+  // the row board.json carries.
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
     var breadth = 1 + Math.min(Math.max((row.chains || []).length - 1, 0), model.breadth_max_chains) * model.breadth_per_chain;
-    return Math.max(1, Math.round(row.tvl_usd * row.category_multiple * growthMult * maturity * breadth));
+    return Math.max(1, Math.round(row.fit_base_usd * growthMult * maturity * breadth));
+  }
+  function fmtUsdShort(n) {
+    if (n >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return '$' + Math.round(n / 1e3) + 'K';
+    return '$' + Math.round(n);
   }
 
   function el(tag, attrs) {
@@ -123,11 +129,13 @@
     var chain = chainOf(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
+    var gas = (capital >= 150 ? 8 : 4) + 2 * Math.ceil(hold / 7);
+    var per100 = Math.round((p.band_low_usd / capital) * 100);
     return [
       { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
       { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
       { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
-      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot. Netted: about $' + gas + ' of gas in total over the hold, against a $' + capital + ' position; at the low end of the fitted band the launch would be worth ' + fmtUsdShort(p.band_low_usd) + ', or ' + fmtUsdShort(per100) + ' per $100 of capital.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
       { text: cautionFor(p), cost: 'nothing but the check', time: '10 minutes a week' },
       { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes, then write the wallet, the dates and every transaction in a farm log.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' }
     ].map(stepText);
@@ -144,8 +152,8 @@
     if ((row.chains || []).length >= 3) out.push('Live on ' + row.chains.length + ' chains: ' + row.chains.join(', ') + '.');
     if (row.age_days !== null && row.age_days < 180) out.push('Young protocol: tracked for under 6 months, so the record is short.');
     else if (row.age_days !== null && row.age_days >= 1095) out.push('Running 3+ years with no token on record: staying power, not a new launch.');
-    if (row.category_multiple > DATA.overall_multiple * 1.25) out.push('Its category trades at ' + row.category_multiple.toFixed(2) + 'x TVL, above the snapshot median of ' + DATA.overall_multiple.toFixed(2) + 'x.');
-    else if (row.category_multiple < DATA.overall_multiple * 0.75) out.push('Its category trades at ' + row.category_multiple.toFixed(2) + 'x TVL, below the snapshot median of ' + DATA.overall_multiple.toFixed(2) + 'x.');
+    var bandShare = Math.round((row.band_low_usd / row.implied_value_usd) * 100);
+    out.push('The fitted curve values its TVL at ' + fmtUsd(row.fit_base_usd) + '; even at the low end of the fit\'s 80% band the launch would be worth ' + fmtUsd(row.band_low_usd) + ' (' + bandShare + '% of the headline value).');
     return out;
   }
 
@@ -208,7 +216,7 @@
         'This board ranks ', el('b', { text: DATA.board_size + ' pre-token protocols' }),
         ' by the value a token launch implies, from one sealed DefiLlama snapshot (', el('b', { text: DATA.as_of }), '). ',
         'A protocol is listed only when it ', el('b', { text: 'records no token' }),
-        ' — no market cap, no CoinGecko id, no symbol — and the rows found below the watchlist floor are also required to be no wrapped, staked or bridged product of a token that already trades. ',
+        ' — no market cap, no CoinGecko id, no symbol — and the rows found outside the watchlist are also required to be no wrapped, staked or bridged product of a token that already trades. ',
         'Wrapped, staked and bridged products are set aside because they already have a token; they cannot launch one. ',
         'The watchlist itself is covered in full, so one watchlist protocol in a set-aside category is still ranked: ',
         el('b', { text: DATA.rows.filter(function (r) { return EXCLUDED_CATEGORIES.indexOf(r.category) >= 0; }).map(function (r) { return r.name + ' (' + r.category + ')'; }).join(', ') || 'none' }), '.'));
@@ -218,7 +226,7 @@
     };
     fact('Watchlist protocols', String(DATA.watchlist_size));
     fact('Rows on the board', String(DATA.board_size));
-    fact('New rows found below the floor', String(DATA.early_size));
+    fact('New rows found outside the watchlist', String(DATA.early_size));
     fact('Watchlist floor', fmtUsd(DATA.floor_usd));
     fact('Live-token protocols set apart', String(DATA.live_size));
     fact('Top implied value', fmtUsd(DATA.rows[0].implied_value_usd));
@@ -351,20 +359,59 @@
     return table;
   }
 
+  // The fitted curve, drawn from the snapshot's own traded tokens, and the held-out test that
+  // chose it over the old median-multiple model. The chart plots every fitted token (log TVL
+  // against log market cap) with the curve through them: the scatter is the evidence.
+  function curveChart() {
+    var pts = DATA.fit_points || [];
+    var f = DATA.fit;
+    var W = 560, H = 300, PL = 46, PR = 12, PT = 12, PB = 34;
+    var xs = pts.map(function (p) { return p[0]; });
+    var ys = pts.map(function (p) { return p[1]; });
+    var x0 = Math.min.apply(null, xs.concat([Math.log10(DATA.rows[DATA.rows.length - 1].tvl_usd)])) - 0.2;
+    var x1 = Math.max.apply(null, xs.concat([Math.log10(DATA.rows[0].tvl_usd)])) + 0.2;
+    var y0 = Math.min.apply(null, ys) - 0.3;
+    var y1 = Math.max.apply(null, ys) + 0.3;
+    function X(v) { return PL + ((v - x0) / (x1 - x0)) * (W - PL - PR); }
+    function Y(v) { return PT + (1 - (v - y0) / (y1 - y0)) * (H - PT - PB); }
+    var circles = pts.map(function (p) {
+      return '<circle cx="' + X(p[0]).toFixed(1) + '" cy="' + Y(p[1]).toFixed(1) + '" r="2.5" fill="#7dd3fc" fill-opacity="0.55"/>';
+    }).join('');
+    var line = '<line x1="' + X(x0).toFixed(1) + '" y1="' + Y(f.intercept + f.slope * x0).toFixed(1) + '" x2="' + X(x1).toFixed(1) + '" y2="' + Y(f.intercept + f.slope * x1).toFixed(1) + '" stroke="#f5b942" stroke-width="2"/>';
+    var ticks = '';
+    function tickLabel(gx) {
+      if (gx >= 9) return '$' + Math.pow(10, gx - 9) + 'B';
+      if (gx >= 6) return '$' + Math.pow(10, gx - 6) + 'M';
+      if (gx >= 3) return '$' + Math.pow(10, gx - 3) + 'K';
+      return '$' + Math.pow(10, gx);
+    }
+    for (var gx = Math.ceil(x0); gx <= x1; gx++) {
+      ticks += '<line x1="' + X(gx).toFixed(1) + '" y1="' + PT + '" x2="' + X(gx).toFixed(1) + '" y2="' + (H - PB) + '" stroke="#263350" stroke-width="1"/>';
+      ticks += '<text x="' + X(gx).toFixed(1) + '" y="' + (H - 18) + '" fill="#93a1b8" font-size="10" text-anchor="middle">' + tickLabel(gx) + '</text>';
+    }
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Scatter of traded tokens, log TVL against log market cap, with the fitted curve">' +
+      '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#141c2e"/>' + ticks + circles + line +
+      '<text x="' + (PL - 8) + '" y="' + (PT + 8) + '" fill="#93a1b8" font-size="10" text-anchor="end">log FDV</text>' +
+      '<text x="' + (W - PR) + '" y="' + (H - 4) + '" fill="#93a1b8" font-size="10" text-anchor="end">log TVL</text></svg>';
+  }
+
   function modelPanel() {
     var m = DATA.model;
+    var f = DATA.fit;
+    var v = DATA.validation;
     var panel = el('section', { class: 'panel model', 'aria-label': 'How the value is estimated' },
       el('h2', { text: 'How the value is estimated' }),
-      el('p', { class: 'sub', text: 'Implied value = TVL × category multiple × growth multiplier × maturity multiplier × chain multiplier. The category multiple is the median market cap / TVL of the snapshot\'s own live-token protocols in that category; categories with fewer than 3 live peers use the snapshot median.' }),
-      el('div', { class: 'formula', text: 'implied = round(TVL × catMultiple × (1 + clamp(7d%, ' + m.growth_floor + ', ' + m.growth_cap + ') ÷ 100 × ' + m.growth_weight + ') × (0.6 + min(age, ' + m.maturity_days + ') ÷ ' + m.maturity_days + ' × 0.4) × (1 + 0.03 × min(chains − 1, ' + m.breadth_max_chains + ')))' }),
+      el('p', { class: 'sub', text: 'Implied value = the fitted curve\'s value for the protocol\'s TVL × growth multiplier × maturity multiplier × chain multiplier. The curve is the least-squares line of log market cap on log TVL over the snapshot\'s own ' + f.n + ' traded protocols outside CEX — fitted at run time from this snapshot, so no coefficient is ever hard-coded.' }),
+      el('div', { class: 'formula', text: 'log10(FDV) = ' + f.intercept.toFixed(3) + ' + ' + f.slope.toFixed(3) + ' × log10(TVL)   ·   implied = round(10^(curve) × (1 + clamp(7d%, ' + m.growth_floor + ', ' + m.growth_cap + ') ÷ 100 × ' + m.growth_weight + ') × (0.6 + min(age, ' + m.maturity_days + ') ÷ ' + m.maturity_days + ' × 0.4) × (1 + 0.03 × min(chains − 1, ' + m.breadth_max_chains + ')))' }),
+      el('div', { class: 'chart', html: curveChart() }),
+      el('p', { class: 'sub', text: 'Each dot is one traded token the curve was fitted on (' + f.n + ' tokens). The line is the fit: R² ' + f.r2.toFixed(2) + ', residual SD ' + f.resid_sd.toFixed(2) + ' in log10 — wide, because market caps scatter widely around any TVL curve, which is why every farm plan is netted at the low end of the fit\'s 80% band instead of the headline value.' }),
       el('table', { class: 'mult-table' },
-        el('caption', { class: 'sub', text: 'Category multiples, computed from this snapshot' }),
-        el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { class: 'num', text: 'Multiple (FDV / TVL)' }), el('th', { class: 'num', text: 'Live peers' }))),
+        el('caption', { class: 'sub', text: 'The held-out test that chose the curve (log10 RMSE on traded tokens the model never saw)' }),
+        el('thead', null, el('tr', null, el('th', { text: 'Test' }), el('th', { class: 'num', text: 'Fitted curve' }), el('th', { class: 'num', text: 'Old median-multiple model' }))),
         el('tbody', null,
-          DATA.category_multiples.map(function (cm) {
-            return el('tr', null, el('td', { text: cm.category }), el('td', { class: 'num', text: cm.multiple.toFixed(3) + 'x' }), el('td', { class: 'num', text: String(cm.peers) }));
-          }),
-          el('tr', null, el('td', { text: 'All categories (fallback)' }), el('td', { class: 'num', text: DATA.overall_multiple.toFixed(3) + 'x' }), el('td', { class: 'num', text: 'median' })))));
+          el('tr', null, el('td', { text: '5-fold cross-validation (' + v.cv_n + ' tokens)' }), el('td', { class: 'num', text: v.cv_curve_rmse.toFixed(3) }), el('td', { class: 'num', text: v.cv_median_rmse.toFixed(3) })),
+          el('tr', null, el('td', { text: 'Walk-forward: fit the oldest two-thirds, test the newest third (' + v.walkforward_n_test + ' tokens)' }), el('td', { class: 'num', text: v.walkforward_curve_rmse.toFixed(3) }), el('td', { class: 'num', text: v.walkforward_median_rmse.toFixed(3) })))),
+      el('p', { class: 'sub', text: 'Two richer models were fitted and rejected on the same held-out test: per-category intercepts and a ridge regression on TVL, chain count, age and 7-day change both predicted worse than the single curve, so the model stays one curve. The adjustments are small and bounded, and the dashboard says what they cost: the curve alone scores ' + v.cv_curve_only_rmse.toFixed(3) + ' log10 RMSE on held-out tokens, the curve with the adjustments ' + v.cv_curve_rmse.toFixed(3) + '.' }));
     return panel;
   }
 
@@ -427,7 +474,8 @@
         el('h3', { text: 'Model breakdown' }),
         el('div', { class: 'equation' },
           eq('TVL', fmtUsd(row.tvl_usd)),
-          eq('Category multiple', row.category_multiple.toFixed(3) + 'x' + (row.category_peers >= 3 ? ' (' + row.category_peers + ' peers)' : ' (snapshot median)')),
+          eq('Fitted curve value', fmtUsd(row.fit_base_usd) + ' (log10(FDV) = ' + DATA.fit.intercept.toFixed(3) + ' + ' + DATA.fit.slope.toFixed(3) + ' × log10(TVL))'),
+          eq('Low end of the 80% band', fmtUsd(row.band_low_usd)),
           eq('7-day growth', fmtPct(row.change_7d) + ' → ×' + (1 + (growth / 100) * DATA.model.growth_weight).toFixed(3)),
           eq('Maturity', fmtAge(row.age_days) + ' → ×' + maturity.toFixed(3)),
           eq('Chain breadth', (row.chains || []).length + ' chain' + ((row.chains || []).length === 1 ? '' : 's') + ' → ×' + breadth.toFixed(3)),
@@ -485,6 +533,8 @@
     readHash();
     if (state.selected) openDetail(state.selected);
   });
+  // Test hook: the parity check calls the page's own functions against board.json.
+  window.RADAR_TEST = { farmSteps: farmSteps, impliedOf: impliedOf };
   readHash();
   renderAll();
 })();
